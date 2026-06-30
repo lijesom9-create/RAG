@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# MongoDB
+data/db/
+data/chromadb/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.coverage.*
+
+# Docker
+docker-compose.override.yml
+
+# Secrets
+*.pem
+*.key
+*.cert
+
+# Database files
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Data directories
+backend/data/
+backend/uploads/
+education-agent/
+
+# Test/debug files
+backend/*.txt
+backend/*.json
+backend/*.log
+backend/*.msi
+backend/*.bak
+backend/*.md
+backend/blog_output.md
+backend/cleanup_result.txt
+backend/docs_list.txt
+backend/title_check.txt
+backend/check_docs.py
+backend/cleanup_docs.py
+backend/test_*.py
+backend/scripts/
+
+# ChromaDB
+chroma_db/
+chromadb/

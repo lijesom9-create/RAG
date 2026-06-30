@@ -1,0 +1,284 @@
+"""
+Embedding Models - 嵌入模型接口
+
+将文本转换为向量表示，用于语义搜索。
+
+实现：
+- EmbeddingModel: 抽象接口
+- TFIDFModel: 基于 TF-IDF 的本地嵌入（无需 API，无网络依赖）
+- OpenAIEmbedding: 基于 OpenAI 兼容 API 的嵌入（需要 API Key）
+"""
+
+import math
+import re
+from abc import ABC, abstractmethod
+from typing import List, Dict, Optional
+from collections import Counter
+from loguru import logger
+
+
+class EmbeddingModel(ABC):
+    """嵌入模型抽象接口"""
+
+    @abstractmethod
+    def embed(self, text: str) -> List[float]:
+        """将文本转换为向量"""
+        pass
+
+    @abstractmethod
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """批量将文本转换为向量"""
+        pass
+
+    @property
+    @abstractmethod
+    def dimension(self) -> int:
+        """向量维度"""
+        pass
+
+
+class TFIDFModel(EmbeddingModel):
+    """
+    基于 TF-IDF 的嵌入模型
+
+    优点：
+    - 完全本地，无需 API Key
+    - 无网络依赖
+    - 对中文支持好（字符级分词）
+    - 速度快
+
+    缺点：
+    - 不理解语义（"开心"和"高兴"无法关联）
+    - 向量维度等于词汇表大小（可能很大）
+
+    适用场景：
+    - 关键词搜索增强
+    - 作为 API 嵌入的降级方案
+    - 小规模知识库（<10000 文档）
+    """
+
+    def __init__(self, max_features: int = 5000):
+        self.max_features = max_features
+        self._vocabulary: Dict[str, int] = {}
+        self._idf: Dict[str, float] = {}
+        self._fitted = False
+
+    def _tokenize(self, text: str) -> List[str]:
+        """
+        中英文混合分词
+
+        - 英文：按空格和标点分词
+        - 中文：字符级二元组（bigram）
+        """
+        text = text.lower()
+        # 提取英文单词
+        english_words = re.findall(r'[a-z]+', text)
+        # 提取中文字符
+        chinese_chars = re.findall(r'[一-鿿]', text)
+        # 中文二元组
+        bigrams = []
+        for i in range(len(chinese_chars) - 1):
+            bigrams.append(chinese_chars[i] + chinese_chars[i + 1])
+        # 单字也保留
+        return english_words + chinese_chars + bigrams
+
+    def fit(self, documents: List[str]) -> None:
+        """
+        在文档集合上训练 TF-IDF
+
+        Args:
+            documents: 文档文本列表
+        """
+        # 统计文档频率
+        doc_freq: Dict[str, int] = Counter()
+        n_docs = len(documents)
+
+        for doc in documents:
+            tokens = set(self._tokenize(doc))
+            for token in tokens:
+                doc_freq[token] += 1
+
+        # 按文档频率排序，取 top N 作为词汇表
+        sorted_terms = sorted(doc_freq.items(), key=lambda x: x[1], reverse=True)
+        top_terms = sorted_terms[:self.max_features]
+
+        self._vocabulary = {term: idx for idx, (term, _) in enumerate(top_terms)}
+
+        # 计算 IDF
+        self._idf = {}
+        for term, freq in top_terms:
+            self._idf[term] = math.log((n_docs + 1) / (freq + 1)) + 1
+
+        self._fitted = True
+        logger.info(f"TF-IDF 模型训练完成: 词汇表大小 {len(self._vocabulary)}, 文档数 {n_docs}")
+
+    def embed(self, text: str) -> List[float]:
+        """将文本转换为 TF-IDF 向量"""
+        if not self._fitted:
+            # 未训练时返回零向量
+            return [0.0] * self.max_features
+
+        tokens = self._tokenize(text)
+        term_freq = Counter(tokens)
+
+        vector = [0.0] * len(self._vocabulary)
+        for term, freq in term_freq.items():
+            if term in self._vocabulary:
+                tf = freq / max(len(tokens), 1)
+                idf = self._idf.get(term, 1.0)
+                vector[self._vocabulary[term]] = tf * idf
+
+        # L2 归一化
+        norm = math.sqrt(sum(x * x for x in vector))
+        if norm > 0:
+            vector = [x / norm for x in vector]
+
+        return vector
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """批量嵌入"""
+        return [self.embed(text) for text in texts]
+
+    @property
+    def dimension(self) -> int:
+        return len(self._vocabulary) if self._fitted else self.max_features
+
+
+class OpenAIEmbedding(EmbeddingModel):
+    """
+    基于 OpenAI 兼容 API 的嵌入模型
+
+    支持 OpenAI、DeepSeek、智谱等提供 embedding 接口的服务。
+    """
+
+    def __init__(self, api_key: str, model: str = "text-embedding-3-small", base_url: str = "https://api.openai.com/v1"):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url
+        self._dimension = 1536  # text-embedding-3-small 默认维度
+
+    def embed(self, text: str) -> List[float]:
+        """调用 API 获取嵌入向量"""
+        import httpx
+
+        try:
+            response = httpx.post(
+                f"{self.base_url}/embeddings",
+                json={"input": text, "model": self.model},
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["data"][0]["embedding"]
+        except Exception as e:
+            logger.error(f"嵌入 API 调用失败: {e}")
+            return [0.0] * self._dimension
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """批量调用 API"""
+        import httpx
+
+        try:
+            response = httpx.post(
+                f"{self.base_url}/embeddings",
+                json={"input": texts, "model": self.model},
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+            # 按 index 排序
+            sorted_data = sorted(data["data"], key=lambda x: x["index"])
+            return [item["embedding"] for item in sorted_data]
+        except Exception as e:
+            logger.error(f"批量嵌入 API 调用失败: {e}")
+            return [[0.0] * self._dimension] * len(texts)
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+
+class SentenceTransformerEmbedding(EmbeddingModel):
+    """
+    基于 sentence-transformers 的本地语义嵌入模型
+
+    优点：
+    - 真正的语义理解（同义词、近义词可关联）
+    - 本地运行，无需 API Key
+    - 支持中文模型（如 bge-small-zh）
+
+    缺点：
+    - 首次加载需要下载模型
+    - 占用一定内存/显存
+    """
+
+    def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
+        import os
+        from sentence_transformers import SentenceTransformer
+
+        # 设置离线模式，优先使用本地缓存
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+        self.model_name = model_name
+        logger.info(f"正在加载 sentence-transformer 模型: {model_name} (离线模式)")
+        self._model = SentenceTransformer(model_name)
+        self._dimension = self._model.get_embedding_dimension()
+        logger.info(f"模型加载完成，维度: {self._dimension}")
+
+    def embed(self, text: str) -> List[float]:
+        """生成单条文本的嵌入向量"""
+        try:
+            return self._model.encode(text, normalize_embeddings=True).tolist()
+        except Exception as e:
+            logger.error(f"本地嵌入模型编码失败: {e}")
+            return [0.0] * self._dimension
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """批量生成嵌入向量"""
+        try:
+            embeddings = self._model.encode(texts, normalize_embeddings=True)
+            return embeddings.tolist()
+        except Exception as e:
+            logger.error(f"本地嵌入模型批量编码失败: {e}")
+            return [[0.0] * self._dimension] * len(texts)
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+
+def create_embedding_model(
+    api_key: Optional[str] = None,
+    model_name: Optional[str] = None,
+    base_url: Optional[str] = None,
+    use_local_embedding: bool = True,
+    local_model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+) -> EmbeddingModel:
+    """
+    创建嵌入模型工厂
+
+    优先级：
+    1. API 嵌入（如果配置了 API Key 和 model_name）
+    2. 本地 sentence-transformers（默认启用）
+    3. TF-IDF 降级方案
+    """
+    if api_key and model_name:
+        logger.info(f"使用 API 嵌入模型: {model_name}")
+        return OpenAIEmbedding(
+            api_key=api_key,
+            model=model_name,
+            base_url=base_url or "https://api.openai.com/v1",
+        )
+
+    if use_local_embedding:
+        try:
+            logger.info(f"使用本地 sentence-transformer 模型: {local_model_name}")
+            return SentenceTransformerEmbedding(model_name=local_model_name)
+        except Exception as e:
+            logger.warning(f"本地嵌入模型加载失败，降级为 TF-IDF: {e}")
+
+    logger.info("使用本地 TF-IDF 模型")
+    return TFIDFModel(max_features=5000)
